@@ -1,14 +1,12 @@
 const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
 
-/* ===== 9:16 FIJO & REDIMENSIONAMIENTO ===== */
 const W = 360;
 const H = 640;
 
 function resize() {
   const scale = Math.min(window.innerWidth / W, window.innerHeight / H);
-  canvas.width = W;
-  canvas.height = H;
+  canvas.width = W; canvas.height = H;
   canvas.style.width = W * scale + "px";
   canvas.style.height = H * scale + "px";
   canvas.style.margin = "auto";
@@ -16,300 +14,337 @@ function resize() {
 resize();
 window.addEventListener("resize", resize);
 
-/* ===== AUDIO ENGINE (Sintetizador) ===== */
-const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+/* ===== ECONOMÍA ===== */
+let totalCoins = parseInt(localStorage.getItem("oneFingerCoins")) || 0;
+let highScore = parseInt(localStorage.getItem("oneFingerHighScore")) || 1;
+let currentSkin = localStorage.getItem("oneFingerSkin") || "#fff";
+
+function saveGame() {
+  localStorage.setItem("oneFingerCoins", totalCoins);
+  localStorage.setItem("oneFingerHighScore", highScore);
+  localStorage.setItem("oneFingerSkin", currentSkin);
+}
+
+/* ===== AUDIO ===== */
+let audioCtx;
+let musicTick = 0;
+const scale = [0, 3, 5, 7, 10]; 
+
+function initAudio() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    playMusicStep();
+  }
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+}
 
 function playSound(freq, type, duration, vol) {
+  if (!audioCtx) return;
   try {
-    const oscillator = audioCtx.createOscillator();
     const gain = audioCtx.createGain();
-    oscillator.type = type;
-    oscillator.frequency.setValueAtTime(freq, audioCtx.currentTime);
-    oscillator.frequency.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
     gain.gain.setValueAtTime(vol, audioCtx.currentTime);
     gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
-    oscillator.connect(gain);
     gain.connect(audioCtx.destination);
-    oscillator.start();
-    oscillator.stop(audioCtx.currentTime + duration);
+
+    if (type === "white") {
+      const bufferSize = audioCtx.sampleRate * duration;
+      const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+      const noise = audioCtx.createBufferSource();
+      noise.buffer = buffer;
+      noise.connect(gain);
+      noise.start();
+    } else {
+      const osc = audioCtx.createOscillator();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
+      osc.connect(gain);
+      osc.start();
+      osc.stop(audioCtx.currentTime + duration);
+    }
   } catch (e) {}
 }
 
-const sfx = {
-  jump: () => playSound(400, "square", 0.1, 0.05),
-  die: () => {
-    playSound(150, "sawtooth", 0.6, 0.2);
-    playSound(60, "square", 0.4, 0.2);
-  },
-  levelUp: () => {
-    playSound(500, "sine", 0.3, 0.08);
-    setTimeout(() => playSound(700, "sine", 0.3, 0.08), 100);
+function playMusicStep() {
+  if (!started && !isInShop) { setTimeout(playMusicStep, 200); return; }
+  const tempo = 0.14;
+  const step = musicTick % 16;
+  
+  if (step % 4 === 0) playSound(55 + (level * 2), "triangle", 0.3, 0.12);
+  if (step === 4 || step === 12) playSound(0, "white", 0.05, 0.02);
+  
+  if (step % 2 === 0 && Math.random() < (0.3 + level * 0.1)) {
+    const note = scale[Math.floor(Math.random() * scale.length)];
+    const freq = 220 * Math.pow(2, (note + (level > 3 ? 12 : 0)) / 12);
+    playSound(freq, "square", 0.15, 0.03);
   }
+  musicTick++;
+  setTimeout(playMusicStep, tempo * 1000);
+}
+
+const sfx = {
+  jump: () => playSound(400, "square", 0.1, 0.04),
+  die: () => { playSound(150, "sawtooth", 0.5, 0.15); playSound(60, "square", 0.3, 0.15); },
+  coin: () => { playSound(1200, "sine", 0.1, 0.1); playSound(1800, "square", 0.1, 0.05); },
+  levelUp: () => playSound(500, "sine", 0.3, 0.07)
 };
 
-/* ===== SISTEMA DE PARTÍCULAS ===== */
+/* ===== JUEGO ===== */
+const palettes = [{ hue: 200 }, { hue: 0 }, { hue: 140 }, { hue: 280 }, { hue: 45 }, { hue: 320 }];
+function getCol(offsetY = 0) {
+  const p = palettes[Math.min(level - 1, palettes.length - 1)];
+  return `hsl(${(p.hue + time * 2 + offsetY * 0.5) % 360}, 90%, 60%)`;
+}
+
 let particles = [];
-function createParticles(x, y, color, count, speed) {
+function createP(x, y, color, count, speed) {
   for (let i = 0; i < count; i++) {
-    particles.push({
-      x: x, y: y,
-      vx: (Math.random() - 0.5) * speed,
-      vy: (Math.random() - 0.5) * speed,
-      size: Math.random() * 4 + 2,
-      color: color,
-      life: 1.0,
-      decay: Math.random() * 0.02 + 0.02
+    particles.push({ x, y, vx: (Math.random()-0.5)*speed, vy: (Math.random()-0.5)*speed, size: Math.random()*4+2, color, life: 1.0, decay: Math.random()*0.03+0.02 });
+  }
+}
+
+let obstacles = [];
+let coins = [];
+let obstacleTimer = 0;
+
+function spawn() {
+  // NUEVO: Definimos el centro del hueco y su movimiento
+  obstacles.push({
+    y: H + 30,
+    gapCenter: W / 2, // Empieza en el centro
+    gapSize: 130 - (level * 2), // Hueco fijo
+    moveOffset: Math.random() * 10, // Para que no se muevan todos igual
+    moveSpeed: 0.05 + (level * 0.01), // Velocidad lateral
+    moveRange: 100, // Qué tanto se mueve a los lados
+    speed: 1.4 + (level * 0.2), 
+    thick: 18
+  });
+  
+  // Monedas (ahora siguen el movimiento del hueco en update)
+  if (Math.random() > 0.4) {
+    coins.push({ 
+      y: H + 30, 
+      linkedToObstacle: obstacles[obstacles.length-1], // Vinculada al obstáculo
+      collected: false 
     });
   }
 }
 
-/* ===== OBSTÁCULOS (BARRAS DE ERROR) ===== */
-let obstacles = [];
-let obstacleTimer = 0;
-let obstacleInterval = 300; 
+let player = { x: W/2, y: H/2, size: 13, vy: 0, gravity: 0.6, jump: -10 };
+let started = false, alive = true, time = 0, level = 1, levelTime = 600, glitch = 0, flash = 0, shake = 0;
+let isInShop = false;
 
-function spawnObstacle() {
-  const gapSize = 130 - (level * 4); 
-  const gapY = Math.random() * (H - 240) + 120;
-  obstacles.push({
-    y: H + 50,
-    gapY: gapY,
-    gapSize: Math.max(75, gapSize),
-    speed: 1.2 + (level * 0.3), 
-    width: W
+/* ===== TIENDA ===== */
+const skins = [
+  { color: "#ffffff", price: 0, name: "Classic" },
+  { color: "#ffff00", price: 50, name: "Gold" },
+  { color: "#00ffff", price: 100, name: "Cyber" },
+  { color: "#ff00ff", price: 200, name: "Neon" }
+];
+
+function checkShopClick(x, y) {
+  let startY = 200;
+  skins.forEach((skin, i) => {
+    if (y > startY + (i * 60) && y < startY + (i * 60) + 50) {
+      if (totalCoins >= skin.price) {
+        currentSkin = skin.color;
+        saveGame();
+        sfx.coin();
+      }
+    }
   });
+  if (y > H - 100 && y < H - 50) isInShop = false;
 }
 
-/* ===== JUGADOR ===== */
-const player = {
-  x: W / 2,
-  y: H / 2,
-  size: 14,
-  vy: 0,
-  gravity: 0.6,
-  jump: -10
-};
-
-/* ===== ESTADO ===== */
-let started = false;
-let alive = true;
-let time = 0;
-let level = 1;
-let levelTime = 600; 
-let ruleText = "Toca para empezar";
-let glitchIntensity = 0;
-let flashAlpha = 0; // Nueva variable para el flash
-
-/* ===== INPUT ===== */
 function input(e) {
   if (e) e.preventDefault();
-  if (audioCtx.state === 'suspended') audioCtx.resume();
+  initAudio();
+  
+  let touchX, touchY;
+  if(e.touches) { touchX = e.touches[0].clientX; touchY = e.touches[0].clientY; }
+  else { touchX = e.clientX; touchY = e.clientY; }
+  
+  const rect = canvas.getBoundingClientRect();
+  const x = (touchX - rect.left) * (W / rect.width);
+  const y = (touchY - rect.top) * (H / rect.height);
 
-  if (!started) {
-    started = true;
-    ruleText = "Regla: Tocar = Saltar";
-    return;
+  if (isInShop) { checkShopClick(x, y); return; }
+
+  if (!started) { 
+    if (y > H/2 + 60 && y < H/2 + 100) { isInShop = true; return; }
+    started = true; return; 
   }
-
-  if (!alive) {
-    restart();
-    return;
-  }
-
+  
+  if (!alive) { restart(); return; }
+  
   player.vy = player.jump;
   sfx.jump();
-  createParticles(player.x, player.y + player.size, "#fff", 5, 4);
+  createP(player.x, player.y + player.size, currentSkin, 5, 4);
 }
-
-canvas.addEventListener("mousedown", input);
 canvas.addEventListener("touchstart", input, { passive: false });
+canvas.addEventListener("mousedown", input);
 
-/* ===== COLOR DINÁMICO ===== */
-function getWallColor(offsetY = 0) {
-  const speedEffect = (time * 15) + (offsetY * 0.8);
-  const hue = speedEffect % 360;
-  return `hsl(${hue}, 90%, 60%)`;
-}
-
-/* ===== UPDATE ===== */
 function update() {
-  // Reducir el flash gradualmente
-  if (flashAlpha > 0) flashAlpha -= 0.05;
+  if (flash > 0) flash -= 0.05;
+  if (shake > 0) shake -= 1;
 
-  particles.forEach((p, i) => {
-    p.x += p.vx; p.y += p.vy;
-    p.life -= p.decay;
-    if (p.life <= 0) particles.splice(i, 1);
-  });
-
-  if (!started || !alive) {
-    glitchIntensity *= 0.9; 
-    return;
-  }
-
+  particles.forEach((p, i) => { p.x += p.vx; p.y += p.vy; p.life -= p.decay; if (p.life <= 0) particles.splice(i, 1); });
+  
+  if (!started || !alive || isInShop) { glitch *= 0.9; return; }
+  
   time++;
   player.vy += player.gravity;
   player.y += player.vy;
-
-  obstacleTimer++;
-  if (obstacleTimer >= obstacleInterval) {
-    spawnObstacle();
-    obstacleTimer = 0;
-  }
-
+  
+  if (++obstacleTimer >= 220) { spawn(); obstacleTimer = 0; }
+  
+  // OBSTÁCULOS PÉNDULO
   obstacles.forEach((obs, i) => {
     obs.y -= obs.speed; 
-    if (Math.abs(player.y - obs.y) < player.size + 8) {
-      if (player.y < obs.gapY - obs.gapSize/2 || player.y > obs.gapY + obs.gapSize/2) {
-         gameOver();
+    
+    // Movimiento Lateral (Seno)
+    obs.gapCenter = (W / 2) + Math.sin(time * obs.moveSpeed + obs.moveOffset) * obs.moveRange;
+
+    // Colisión Izquierda
+    if (player.y + player.size*0.6 > obs.y - obs.thick/2 && player.y - player.size*0.6 < obs.y + obs.thick/2) {
+      // Si el jugador NO está dentro del hueco
+      if (player.x - player.size < obs.gapCenter - obs.gapSize/2 || player.x + player.size > obs.gapCenter + obs.gapSize/2) {
+        die();
       }
     }
     if (obs.y < -50) obstacles.splice(i, 1);
   });
 
-  if (player.y - player.size <= 0 || player.y + player.size >= H) {
-    gameOver();
-  }
-
-  if (time >= levelTime) nextLevel();
-
-  if (Math.random() < 0.02) glitchIntensity = 7;
-  else glitchIntensity *= 0.85;
-}
-
-function gameOver() {
-  if (alive) {
-    sfx.die();
-    glitchIntensity = 30;
-    flashAlpha = 0.8; // Flash al morir
-    createParticles(player.x, player.y, getWallColor(player.y), 35, 18);
-    alive = false;
-  }
-}
-
-/* ===== DRAW ===== */
-function draw() {
-  ctx.fillStyle = "#050505";
-  ctx.fillRect(0, 0, W, H);
-
-  ctx.save();
-  if (glitchIntensity > 0.5) {
-    ctx.translate((Math.random() - 0.5) * glitchIntensity, (Math.random() - 0.5) * glitchIntensity);
-  }
-
-  drawWalls();
-
-  obstacles.forEach(obs => {
-    const col = getWallColor(obs.y);
-    ctx.fillStyle = col;
-    ctx.globalAlpha = 0.6;
-    ctx.fillRect(0, obs.y - 6, W, 12);
-    ctx.clearRect(W/2 - 60, obs.gapY - obs.gapSize/2, 120, obs.gapSize); 
-    ctx.globalAlpha = 1.0;
+  // MONEDAS
+  coins.forEach((c, i) => {
+    // La moneda sigue al obstáculo
+    if (c.linkedToObstacle) {
+      c.y = c.linkedToObstacle.y;
+      c.x = c.linkedToObstacle.gapCenter; // La moneda siempre está en el centro del hueco
+    }
+    
+    let dx = player.x - c.x;
+    let dy = player.y - c.y;
+    let dist = Math.sqrt(dx*dx + dy*dy);
+    
+    if (dist < player.size + 15) {
+      sfx.coin();
+      totalCoins++;
+      createP(c.x, c.y, "#ffd700", 10, 8);
+      saveGame();
+      coins.splice(i, 1);
+    } else if (c.y < -50) {
+      coins.splice(i, 1);
+    }
   });
 
-  particles.forEach(p => {
-    ctx.globalAlpha = p.life;
-    ctx.fillStyle = p.color;
-    ctx.fillRect(p.x, p.y, p.size, p.size);
-  });
-  ctx.globalAlpha = 1.0;
-
-  if (alive) {
-    const glow = getWallColor(player.y);
-    ctx.shadowBlur = 25;
-    ctx.shadowColor = glow;
-    ctx.fillStyle = "#fff";
-    ctx.beginPath();
-    ctx.arc(player.x, player.y, player.size, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.shadowBlur = 0;
-  }
-
-  ctx.fillStyle = "#888";
-  ctx.font = "bold 14px Arial";
-  ctx.textAlign = "left";
-  ctx.fillText("NIVEL " + level, 16, 30);
-  ctx.fillText(ruleText, 16, 50);
-
-  if (!started) drawStart();
-  if (!alive && started) drawGameOver();
-
-  ctx.restore();
-
-  // DIBUJAR EL FLASH (encima de todo)
-  if (flashAlpha > 0) {
-    ctx.fillStyle = `rgba(255, 255, 255, ${flashAlpha})`;
-    ctx.fillRect(0, 0, W, H);
-  }
+  if (player.y - player.size <= 0 || player.y + player.size >= H) die();
+  if (time >= levelTime) { level++; time = 0; sfx.levelUp(); flash = 0.6; glitch = 20; }
+  if (Math.random() < 0.02) glitch = 7; else glitch *= 0.85;
 }
 
-function drawWalls() {
-  const wallWidth = 24;
-  const grd = ctx.createLinearGradient(0, 0, 0, H);
-  grd.addColorStop(0, getWallColor(0));
-  grd.addColorStop(0.3, getWallColor(H*0.3));
-  grd.addColorStop(0.6, getWallColor(H*0.6));
-  grd.addColorStop(1, getWallColor(H));
-  ctx.fillStyle = grd;
-  ctx.fillRect(0, 0, wallWidth, H);
-  ctx.fillRect(W - wallWidth, 0, wallWidth, H);
-}
-
-function drawStart() {
-  ctx.fillStyle = "#aaa";
-  ctx.font = "bold 22px Arial";
-  ctx.textAlign = "center";
-  ctx.fillText("ONE FINGER WORLD", W / 2, H / 2 - 40);
-  ctx.font = "14px Arial";
-  ctx.fillText("Toca para empezar", W / 2, H / 2);
-}
-
-function drawGameOver() {
-  ctx.fillStyle = "#ff5555";
-  ctx.font = "bold 22px Arial";
-  ctx.textAlign = "center";
-  ctx.fillText("FALLASTE", W / 2, H / 2 - 10);
-  ctx.fillStyle = "#aaa";
-  ctx.font = "14px Arial";
-  ctx.fillText("Toca para intentar otra vez", W / 2, H / 2 + 20);
-}
-
-function nextLevel() {
-  level++;
-  time = 0;
-  player.gravity += 0.06;
-  obstacleInterval = Math.max(100, obstacleInterval - 20); 
-  sfx.levelUp();
-  glitchIntensity = 20;
-  flashAlpha = 0.5; // Flash suave al subir de nivel
-  createParticles(W/2, H/2, "#fff", 20, 10);
-  const messages = ["Las paredes observan", "Sigue subiendo", "No parpadees", "Casi lo tienes", "Inestabilidad detectada"];
-  ruleText = messages[Math.min(level - 1, messages.length - 1)];
+function die() {
+  if (!alive) return;
+  sfx.die(); glitch = 30; flash = 0.8; shake = 20;
+  alive = false;
+  createP(player.x, player.y, currentSkin, 35, 18);
+  if (level > highScore) { highScore = level; saveGame(); }
 }
 
 function restart() {
-  level = 1;
-  time = 0;
-  player.gravity = 0.6;
-  obstacleInterval = 300; 
-  ruleText = "Regla: Tocar = Saltar";
-  alive = true;
-  particles = [];
-  obstacles = [];
-  obstacleTimer = 0;
-  player.y = H / 2;
-  player.vy = 0;
-  flashAlpha = 0; // Resetear flash
+  level = 1; time = 0; alive = true; obstacles = []; coins = []; obstacleTimer = 0;
+  player.y = H/2; player.vy = 0; flash = 0; musicTick = 0; shake = 0;
 }
 
-function loop() {
-  update();
-  draw();
-  requestAnimationFrame(loop);
-}
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('sw.js');
+function draw() {
+  ctx.fillStyle = "#050505"; ctx.fillRect(0, 0, W, H);
+  ctx.save();
+  
+  if (shake > 0) {
+    let dx = (Math.random() - 0.5) * shake;
+    let dy = (Math.random() - 0.5) * shake;
+    ctx.translate(dx, dy);
+  }
+  if (glitch > 0.5) ctx.translate((Math.random()-0.5)*glitch, (Math.random()-0.5)*glitch);
+  
+  const wallGrd = ctx.createLinearGradient(0, 0, 0, H);
+  wallGrd.addColorStop(0, getCol(0)); wallGrd.addColorStop(1, getCol(H));
+  ctx.fillStyle = wallGrd; ctx.fillRect(0, 0, 20, H); ctx.fillRect(W - 20, 0, 20, H);
+
+  // DIBUJAR PÉNDULOS
+  obstacles.forEach(obs => {
+    const c = getCol(obs.y); ctx.fillStyle = c;
+    ctx.shadowBlur = 15; ctx.shadowColor = c;
+    
+    // Parte Izquierda
+    ctx.fillRect(0, obs.y - obs.thick/2, obs.gapCenter - obs.gapSize/2, obs.thick);
+    // Parte Derecha
+    ctx.fillRect(obs.gapCenter + obs.gapSize/2, obs.y - obs.thick/2, W, obs.thick);
+    
+    ctx.shadowBlur = 0;
+  });
+
+  coins.forEach(c => {
+    ctx.fillStyle = "#ffd700";
+    ctx.beginPath(); ctx.arc(c.x, c.y, 8, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = "#fff"; ctx.font = "10px Arial"; ctx.textAlign="center"; ctx.fillText("$", c.x, c.y+3);
+  });
+
+  particles.forEach(p => { ctx.globalAlpha = p.life; ctx.fillStyle = p.color; ctx.fillRect(p.x, p.y, p.size, p.size); });
+  ctx.globalAlpha = 1.0;
+  
+  if (alive && !isInShop) {
+    ctx.shadowBlur = 25; ctx.shadowColor = currentSkin; ctx.fillStyle = currentSkin;
+    ctx.beginPath(); ctx.arc(player.x, player.y, player.size, 0, Math.PI*2); ctx.fill(); ctx.shadowBlur = 0;
+  }
+
+  ctx.fillStyle = "white"; ctx.font = "bold 16px Arial"; ctx.textAlign = "left";
+  ctx.fillText("NIVEL " + level, 25, 35);
+  ctx.fillStyle = "#ffd700"; ctx.fillText("M: " + totalCoins, 25, 55); 
+
+  if (!started && !isInShop) {
+    ctx.fillStyle = "white"; ctx.font = "bold 24px Arial"; ctx.textAlign = "center";
+    ctx.fillText("ONE FINGER WORLD", W/2, H/2-60);
+    ctx.font = "16px Arial"; ctx.fillText("Toca para saltar", W/2, H/2 - 20);
+    ctx.fillStyle = "#333"; ctx.fillRect(W/2 - 60, H/2 + 60, 120, 40);
+    ctx.fillStyle = "#fff"; ctx.fillText("TIENDA SKINS", W/2, H/2 + 85);
+  }
+
+  if (isInShop) {
+    ctx.fillStyle = "rgba(0,0,0,0.9)"; ctx.fillRect(0,0,W,H);
+    ctx.fillStyle = "#fff"; ctx.font = "bold 24px Arial"; ctx.textAlign = "center";
+    ctx.fillText("TIENDA", W/2, 80);
+    ctx.fillText("Tus Monedas: " + totalCoins, W/2, 120);
+
+    let startY = 200;
+    skins.forEach((skin, i) => {
+      ctx.fillStyle = "#222"; 
+      if (currentSkin === skin.color) ctx.fillStyle = "#444"; 
+      ctx.fillRect(40, startY + (i*60), W-80, 50);
+      ctx.fillStyle = skin.color; ctx.beginPath(); ctx.arc(70, startY + (i*60) + 25, 15, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = "#fff"; ctx.font = "16px Arial"; ctx.textAlign = "left";
+      ctx.fillText(skin.name, 100, startY + (i*60) + 30);
+      ctx.textAlign = "right";
+      if (totalCoins >= skin.price) ctx.fillStyle = "#0f0"; else ctx.fillStyle = "#f00";
+      ctx.fillText("$" + skin.price, W-60, startY + (i*60) + 30);
+    });
+
+    ctx.fillStyle = "#f00"; ctx.fillRect(W/2 - 50, H - 100, 100, 40);
+    ctx.fillStyle = "#fff"; ctx.textAlign="center"; ctx.fillText("SALIR", W/2, H - 75);
+  }
+
+  if (!alive && started) {
+    ctx.fillStyle = "#ff5555"; ctx.font = "bold 24px Arial"; ctx.textAlign = "center";
+    ctx.fillText("GAME OVER", W/2, H/2-10);
+    ctx.fillStyle = "white"; ctx.font = "14px Arial"; ctx.fillText("Toca para reiniciar", W/2, H/2+25);
+    ctx.fillStyle = "#ffd700"; ctx.fillText("Ganaste " + totalCoins + " monedas", W/2, H/2+50);
+  }
+
+  ctx.restore();
+  if (flash > 0) { ctx.fillStyle = `rgba(255,255,255,${flash})`; ctx.fillRect(0,0,W,H); }
 }
 
+function loop() { update(); draw(); requestAnimationFrame(loop); }
 loop();
