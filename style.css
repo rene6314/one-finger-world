@@ -1,0 +1,21 @@
+body {
+  margin: 0;
+  padding: 0;
+  background-color: #050505; /* Un negro casi total para que combine con tu juego */
+  overflow: hidden;
+  touch-action: manipulation;
+  font-family: Arial, Helvetica, sans-serif;
+  
+  /* ESTO ES LO QUE CENTRA EL JUEGO */
+  display: flex;
+  justify-content: center; /* Centra horizontalmente */
+  align-items: center;     /* Centra verticalmente */
+  height: 100vh;           /* Usa el 100% de la altura de la pantalla */
+  width: 100vw;            /* Usa el 100% del ancho de la pantalla */
+}
+
+canvas {
+  display: block;
+  /* El borde es opcional, pero ayuda a ver los límites del juego */
+  box-shadow: 0 0 20px rgba(255, 255, 255, 0.1); 
+}
