@@ -110,29 +110,32 @@ let coins = [];
 let obstacleTimer = 0;
 
 function spawn() {
-  // NUEVO: Definimos el centro del hueco y su movimiento
+  // AHORA SPAWNEAMOS EN CUALQUIER LUGAR X (Porque el jugador puede moverse)
+  let randomX = Math.random() * (W - 100) + 50;
+  
   obstacles.push({
     y: H + 30,
-    gapCenter: W / 2, // Empieza en el centro
-    gapSize: 130 - (level * 2), // Hueco fijo
-    moveOffset: Math.random() * 10, // Para que no se muevan todos igual
-    moveSpeed: 0.05 + (level * 0.01), // Velocidad lateral
-    moveRange: 100, // Qué tanto se mueve a los lados
+    gapCenter: randomX, 
+    gapSize: 140 - (level * 1.5), 
+    // Niveles altos = Se mueven. Niveles bajos = Estáticos.
+    moveSpeed: level > 4 ? 0.03 + (level * 0.005) : 0, 
+    moveRange: level > 4 ? 60 : 0,
+    moveOffset: Math.random() * 10,
     speed: 1.4 + (level * 0.2), 
     thick: 18
   });
   
-  // Monedas (ahora siguen el movimiento del hueco en update)
   if (Math.random() > 0.4) {
     coins.push({ 
       y: H + 30, 
-      linkedToObstacle: obstacles[obstacles.length-1], // Vinculada al obstáculo
+      linkedToObstacle: obstacles[obstacles.length-1], 
       collected: false 
     });
   }
 }
 
-let player = { x: W/2, y: H/2, size: 13, vy: 0, gravity: 0.6, jump: -10 };
+// targetX es hacia donde quiere ir el jugador
+let player = { x: W/2, y: H/2, targetX: W/2, size: 13, vy: 0, gravity: 0.6, jump: -10 };
 let started = false, alive = true, time = 0, level = 1, levelTime = 600, glitch = 0, flash = 0, shake = 0;
 let isInShop = false;
 
@@ -179,7 +182,14 @@ function input(e) {
   
   if (!alive) { restart(); return; }
   
+  // === NUEVA MECÁNICA DE CONTROL ===
+  // 1. Saltar
   player.vy = player.jump;
+  
+  // 2. Moverse lateralmente hacia donde tocaste
+  // Limitamos para que no se salga de las paredes
+  player.targetX = Math.max(20, Math.min(W - 20, x));
+
   sfx.jump();
   createP(player.x, player.y + player.size, currentSkin, 5, 4);
 }
@@ -195,34 +205,44 @@ function update() {
   if (!started || !alive || isInShop) { glitch *= 0.9; return; }
   
   time++;
+  
+  // FÍSICA
   player.vy += player.gravity;
   player.y += player.vy;
   
+  // MOVIMIENTO SUAVE EN X (Lerp)
+  // La bola se desliza suavemente hacia la posición de tu dedo
+  player.x += (player.targetX - player.x) * 0.15;
+
   if (++obstacleTimer >= 220) { spawn(); obstacleTimer = 0; }
   
-  // OBSTÁCULOS PÉNDULO
   obstacles.forEach((obs, i) => {
     obs.y -= obs.speed; 
     
-    // Movimiento Lateral (Seno)
-    obs.gapCenter = (W / 2) + Math.sin(time * obs.moveSpeed + obs.moveOffset) * obs.moveRange;
+    // Movimiento del obstáculo (Nivel 4+)
+    if (obs.moveRange > 0) {
+      // Calculamos la oscilación sobre su centro original
+      let oscillation = Math.sin(time * obs.moveSpeed + obs.moveOffset) * obs.moveRange;
+      // Actualizamos el centro visual
+      obs.currentX = obs.gapCenter + oscillation;
+    } else {
+      obs.currentX = obs.gapCenter;
+    }
 
-    // Colisión Izquierda
     if (player.y + player.size*0.6 > obs.y - obs.thick/2 && player.y - player.size*0.6 < obs.y + obs.thick/2) {
-      // Si el jugador NO está dentro del hueco
-      if (player.x - player.size < obs.gapCenter - obs.gapSize/2 || player.x + player.size > obs.gapCenter + obs.gapSize/2) {
+      // Checar si el jugador está DENTRO del hueco
+      if (player.x - player.size < obs.currentX - obs.gapSize/2 || player.x + player.size > obs.currentX + obs.gapSize/2) {
         die();
       }
     }
     if (obs.y < -50) obstacles.splice(i, 1);
   });
 
-  // MONEDAS
   coins.forEach((c, i) => {
-    // La moneda sigue al obstáculo
     if (c.linkedToObstacle) {
       c.y = c.linkedToObstacle.y;
-      c.x = c.linkedToObstacle.gapCenter; // La moneda siempre está en el centro del hueco
+      // La moneda sigue al hueco (currentX)
+      c.x = c.linkedToObstacle.currentX || c.linkedToObstacle.gapCenter;
     }
     
     let dx = player.x - c.x;
@@ -255,7 +275,8 @@ function die() {
 
 function restart() {
   level = 1; time = 0; alive = true; obstacles = []; coins = []; obstacleTimer = 0;
-  player.y = H/2; player.vy = 0; flash = 0; musicTick = 0; shake = 0;
+  player.y = H/2; player.x = W/2; player.targetX = W/2; // Reiniciar posición X
+  player.vy = 0; flash = 0; musicTick = 0; shake = 0;
 }
 
 function draw() {
@@ -273,16 +294,15 @@ function draw() {
   wallGrd.addColorStop(0, getCol(0)); wallGrd.addColorStop(1, getCol(H));
   ctx.fillStyle = wallGrd; ctx.fillRect(0, 0, 20, H); ctx.fillRect(W - 20, 0, 20, H);
 
-  // DIBUJAR PÉNDULOS
   obstacles.forEach(obs => {
     const c = getCol(obs.y); ctx.fillStyle = c;
     ctx.shadowBlur = 15; ctx.shadowColor = c;
     
-    // Parte Izquierda
-    ctx.fillRect(0, obs.y - obs.thick/2, obs.gapCenter - obs.gapSize/2, obs.thick);
-    // Parte Derecha
-    ctx.fillRect(obs.gapCenter + obs.gapSize/2, obs.y - obs.thick/2, W, obs.thick);
+    // Usamos obs.currentX que es la posición real (estática o moviéndose)
+    let cx = obs.currentX || obs.gapCenter;
     
+    ctx.fillRect(0, obs.y - obs.thick/2, cx - obs.gapSize/2, obs.thick);
+    ctx.fillRect(cx + obs.gapSize/2, obs.y - obs.thick/2, W, obs.thick);
     ctx.shadowBlur = 0;
   });
 
@@ -307,7 +327,7 @@ function draw() {
   if (!started && !isInShop) {
     ctx.fillStyle = "white"; ctx.font = "bold 24px Arial"; ctx.textAlign = "center";
     ctx.fillText("ONE FINGER WORLD", W/2, H/2-60);
-    ctx.font = "16px Arial"; ctx.fillText("Toca para saltar", W/2, H/2 - 20);
+    ctx.font = "16px Arial"; ctx.fillText("Toca LADOS para moverte", W/2, H/2 - 20); // Instrucción actualizada
     ctx.fillStyle = "#333"; ctx.fillRect(W/2 - 60, H/2 + 60, 120, 40);
     ctx.fillStyle = "#fff"; ctx.fillText("TIENDA SKINS", W/2, H/2 + 85);
   }
